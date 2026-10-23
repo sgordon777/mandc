@@ -284,7 +284,12 @@ def main() -> None:
                 render_mode = "CPU f64"
             pygame.surfarray.blit_array(screen, pixels)
             status = font.render(
-                f"{render_mode} | Zoom {START_SPAN / span:.1f}x | Iterations {max_iterations}",
+                f"{render_mode} | Span {span:.17g} | Iterations {max_iterations}",
+                True,
+                (255, 255, 255),
+            )
+            center_status = font.render(
+                f"Center: {center_real:.17g}, {center_imag:.17g}",
                 True,
                 (255, 255, 255),
             )
@@ -293,7 +298,8 @@ def main() -> None:
                 controls_text = "Wheel zoom | Drag pan | G GPU/CPU | +/- detail | R reset | Esc quit"
             controls = font.render(controls_text, True, (255, 255, 255))
             screen.blit(status, (8, 6))
-            screen.blit(controls, (8, 24))
+            screen.blit(center_status, (8, 24))
+            screen.blit(controls, (8, 42))
             pygame.display.flip()
             dirty = False
 
