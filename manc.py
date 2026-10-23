@@ -16,6 +16,7 @@ import wgpu
 WIDTH = 512
 HEIGHT = 512
 MAX_ITERATIONS = 256
+THREADS = 4
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 
@@ -268,7 +269,15 @@ def main() -> None:
                 pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
             elif c_renderer is not None:
-                pixels = c_renderer.render(width, height, center_real, center_imag, span, max_iterations)
+                pixels = c_renderer.render(
+                    width,
+                    height,
+                    center_real,
+                    center_imag,
+                    span,
+                    max_iterations,
+                    THREADS,
+                )
                 render_mode = "C f64"
             else:
                 pixels = render_mandelbrot(width, height, center_real, center_imag, span, max_iterations)

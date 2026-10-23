@@ -20,7 +20,7 @@ class CRenderer:
         source = Path(__file__).with_name("mandelbrot.c")
         source_bytes = source.read_bytes()
         build_key = hashlib.sha256(
-            source_bytes + platform.machine().encode() + b"-O3-march=native"
+            source_bytes + platform.machine().encode() + b"-O3-march=native-fopenmp"
         ).hexdigest()[:16]
         cache_dir = Path(tempfile.gettempdir()) / "mandc-native"
         cache_dir.mkdir(exist_ok=True)
@@ -34,6 +34,7 @@ class CRenderer:
                     "-O3",
                     "-march=native",
                     "-fno-math-errno",
+                    "-fopenmp",
                     "-fPIC",
                     "-shared",
                     str(source),
@@ -56,6 +57,7 @@ class CRenderer:
             ctypes.c_double,
             ctypes.c_double,
             ctypes.c_int,
+            ctypes.c_int,
             ctypes.POINTER(ctypes.c_uint8),
         ]
         self._render.restype = None
@@ -68,6 +70,7 @@ class CRenderer:
         center_imag: float,
         span: float,
         max_iterations: int,
+        thread_count: int = 1,
     ) -> np.ndarray:
         """Return an RGB image with shape (width, height, 3)."""
         image = np.empty((width, height, 3), dtype=np.uint8)
@@ -78,6 +81,7 @@ class CRenderer:
             center_imag,
             span,
             max_iterations,
+            thread_count,
             image.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
         )
         return image

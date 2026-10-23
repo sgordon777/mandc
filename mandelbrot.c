@@ -9,10 +9,12 @@ void render_mandelbrot_c(
     double center_imag,
     double span,
     int max_iterations,
+    int thread_count,
     uint8_t *image
 ) {
     const double imaginary_span = span * (double)height / (double)width;
 
+#pragma omp parallel for schedule(dynamic, 1) num_threads(thread_count)
     for (int x = 0; x < width; ++x) {
         const double real = center_real - span / 2.0
             + span * (double)x / (double)(width - 1 > 0 ? width - 1 : 1);
