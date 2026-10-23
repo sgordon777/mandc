@@ -19,8 +19,8 @@ MAX_ITERATIONS = 256
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 
-# 0=native python(double), 1=SSE(double), 2=webGPU (single)
-RENDERER = 0
+# 0=NumPy float64, 1=C float64, 2=WebGPU float32
+RENDERER = 1
 
 def render_mandelbrot(
     width: int,
@@ -172,6 +172,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 
 def main() -> None:
+    c_renderer = None
     if RENDERER == 2:
         try:
             gpu_renderer = WebGPURenderer()
@@ -184,7 +185,10 @@ def main() -> None:
     elif RENDERER == 1:
         gpu_renderer = None
         use_gpu = False
-        print("Using CPU float32 renderer")
+        from c_renderer import CRenderer
+
+        c_renderer = CRenderer()
+        print("Using native C float64 renderer")
     else:
         gpu_renderer = None
         use_gpu = False
@@ -263,6 +267,9 @@ def main() -> None:
             if use_gpu and gpu_renderer is not None:
                 pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
+            elif c_renderer is not None:
+                pixels = c_renderer.render(width, height, center_real, center_imag, span, max_iterations)
+                render_mode = "C f64"
             else:
                 pixels = render_mandelbrot(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "CPU f64"
