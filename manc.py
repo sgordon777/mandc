@@ -17,11 +17,32 @@ WIDTH = 512
 HEIGHT = 512
 MAX_ITERATIONS = 256
 THREADS = 4
+PALETTE = "smooth"  # "smooth" or "binary"
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
 RENDERER = 1
+
+
+def color_iteration_counts(iterations: np.ndarray, palette: str = PALETTE) -> np.ndarray:
+    """Map escape counts to an RGB image using a Python-selected palette."""
+    escaped = iterations > 0
+    image = np.zeros((*iterations.shape, 3), dtype=np.uint8)
+
+    if palette == "binary":
+        image[escaped] = 255
+    elif palette == "smooth":
+        phase = iterations.astype(np.float64) * np.float64(0.08)
+        image[..., 0] = (127.5 + 127.5 * np.sin(phase)).astype(np.uint8)
+        image[..., 1] = (127.5 + 127.5 * np.sin(phase + np.float64(2.1))).astype(np.uint8)
+        image[..., 2] = (127.5 + 127.5 * np.sin(phase + np.float64(4.2))).astype(np.uint8)
+        image[~escaped] = 0
+    else:
+        raise ValueError(f"Unknown palette {palette!r}; expected 'smooth' or 'binary'")
+
+    return image
+
 
 def render_mandelbrot(
     width: int,
@@ -47,13 +68,7 @@ def render_mandelbrot(
         iterations[escaped_now] = step + 1
         escaped |= escaped_now
 
-    phase = iterations.astype(np.float64) * np.float64(0.08)
-    image = np.empty((*coordinates.shape, 3), dtype=np.uint8)
-    image[..., 0] = (127.5 + 127.5 * np.sin(phase)).astype(np.uint8)
-    image[..., 1] = (127.5 + 127.5 * np.sin(phase + np.float64(2.1))).astype(np.uint8)
-    image[..., 2] = (127.5 + 127.5 * np.sin(phase + np.float64(4.2))).astype(np.uint8)
-    image[~escaped] = 0
-    return image
+    return color_iteration_counts(iterations)
 
 
 class WebGPURenderer:
@@ -100,15 +115,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    var color = 0u;
-    if (escaped) {
-        let phase = f32(iteration) * 0.08;
-        let red = u32(127.5 + 127.5 * sin(phase));
-        let green = u32(127.5 + 127.5 * sin(phase + 2.1));
-        let blue = u32(127.5 + 127.5 * sin(phase + 4.2));
-        color = red | (green << 8u) | (blue << 16u) | 0xff000000u;
-    }
-    pixels[id.y * params.width + id.x] = color;
+    pixels[id.y * params.width + id.x] = iteration;
 }
 """
 
@@ -168,8 +175,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         self.device.queue.submit([encoder.finish()])
 
         raw_pixels = self.device.queue.read_buffer(pixel_buffer)
-        rgba = np.frombuffer(raw_pixels, dtype=np.uint8).reshape(height, width, 4)
-        return rgba[..., :3].transpose(1, 0, 2).copy()
+        return np.frombuffer(raw_pixels, dtype=np.uint32).reshape(height, width).T.copy()
 
 
 def main() -> None:
@@ -266,10 +272,11 @@ def main() -> None:
         if dirty and running:
             width, height = screen.get_size()
             if use_gpu and gpu_renderer is not None:
-                pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
+                iterations = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
+                pixels = color_iteration_counts(iterations)
                 render_mode = "WebGPU f32"
             elif c_renderer is not None:
-                pixels = c_renderer.render(
+                iterations = c_renderer.render(
                     width,
                     height,
                     center_real,
@@ -278,6 +285,7 @@ def main() -> None:
                     max_iterations,
                     THREADS,
                 )
+                pixels = color_iteration_counts(iterations)
                 render_mode = "C f64"
             else:
                 pixels = render_mandelbrot(width, height, center_real, center_imag, span, max_iterations)

@@ -58,7 +58,7 @@ class CRenderer:
             ctypes.c_double,
             ctypes.c_int,
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.POINTER(ctypes.c_uint16),
         ]
         self._render.restype = None
 
@@ -72,8 +72,8 @@ class CRenderer:
         max_iterations: int,
         thread_count: int = 1,
     ) -> np.ndarray:
-        """Return an RGB image with shape (width, height, 3)."""
-        image = np.empty((width, height, 3), dtype=np.uint8)
+        """Return per-pixel escape iteration counts with shape (width, height)."""
+        iterations = np.empty((width, height), dtype=np.uint16)
         self._render(
             width,
             height,
@@ -82,6 +82,6 @@ class CRenderer:
             span,
             max_iterations,
             thread_count,
-            image.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            iterations.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16)),
         )
-        return image
+        return iterations

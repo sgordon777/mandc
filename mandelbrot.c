@@ -10,7 +10,7 @@ void render_mandelbrot_c(
     double span,
     int max_iterations,
     int thread_count,
-    uint8_t *image
+    uint16_t *iterations
 ) {
     const double imaginary_span = span * (double)height / (double)width;
 
@@ -39,24 +39,8 @@ void render_mandelbrot_c(
                 }
             }
 
-            const size_t pixel_index = ((size_t)x * (size_t)height + (size_t)y) * 3;
-            if (escaped) {
-#if 1          
-                const double phase = (double)iteration * 0.08;
-                image[pixel_index] = (uint8_t)(127.5 + 127.5 * sin(phase));
-                image[pixel_index + 1] = (uint8_t)(127.5 + 127.5 * sin(phase + 2.1));
-                image[pixel_index + 2] = (uint8_t)(127.5 + 127.5 * sin(phase + 4.2));
-#else
-                image[pixel_index] = 255;
-                image[pixel_index + 1] = 255;
-                image[pixel_index + 2] = 255;
-
-#endif
-                } else {
-                image[pixel_index] = 0;
-                image[pixel_index + 1] = 0;
-                image[pixel_index + 2] = 0;
-            }
+            const size_t pixel_index = (size_t)x * (size_t)height + (size_t)y;
+            iterations[pixel_index] = (uint16_t)iteration;
         }
     }
 }
