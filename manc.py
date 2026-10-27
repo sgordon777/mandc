@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 if sys.platform.startswith("linux"):
     os.environ.setdefault("WGPU_BACKEND_TYPE", "Vulkan")
@@ -217,6 +218,9 @@ def main() -> None:
     pygame.display.set_caption("Mandelbrot Explorer")
     font = pygame.font.Font(None, 18)
     clock = pygame.time.Clock()
+    render_ms = 0.0
+    smoothed_render_ms = 0.0
+    render_time_alpha = 0.2
 
     center_real: np.float64 = START_CENTER[0]
     center_imag: np.float64 = START_CENTER[1]
@@ -287,6 +291,7 @@ def main() -> None:
 
         if dirty and running:
             width, height = screen.get_size()
+            render_start = time.perf_counter()
             if use_gpu and gpu_renderer is not None:
                 pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
@@ -305,9 +310,11 @@ def main() -> None:
             else:
                 pixels = render_mandelbrot(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "CPU f64"
+            render_ms = (time.perf_counter() - render_start) * 1000.0
+            smoothed_render_ms = render_time_alpha * render_ms + (1.0 - render_time_alpha) * smoothed_render_ms
             pygame.surfarray.blit_array(screen, pixels)
             status = font.render(
-                f"{render_mode} | Span {span:.17g} | Iterations {max_iterations}",
+                f"{render_mode} | Render {smoothed_render_ms:.1f} ms | Span {span:.17g} | Iterations {max_iterations}",
                 True,
                 (255, 255, 255),
             )
