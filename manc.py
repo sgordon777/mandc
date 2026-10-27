@@ -22,7 +22,7 @@ START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
-RENDERER = 1
+RENDERER = 2
 
 
 def color_iteration_counts(iterations: np.ndarray, palette: str = PALETTE) -> np.ndarray:
@@ -115,8 +115,19 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    pixels[id.y * params.width + id.x] = iteration;
+    var color = 0u;
+    if (escaped) {
+        let phase = f32(iteration) * 0.08;
+        let red = u32(127.5 + 127.5 * sin(phase));
+        let green = u32(127.5 + 127.5 * sin(phase + 2.1));
+        let blue = u32(127.5 + 127.5 * sin(phase + 4.2));
+        color = red | (green << 8u) | (blue << 16u) | 0xff000000u;
+    }
+    pixels[id.y * params.width + id.x] = color;
+
+
 }
+
 """
 
     def __init__(self) -> None:
@@ -175,7 +186,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         self.device.queue.submit([encoder.finish()])
 
         raw_pixels = self.device.queue.read_buffer(pixel_buffer)
-        return np.frombuffer(raw_pixels, dtype=np.uint32).reshape(height, width).T.copy()
+        rgba = np.frombuffer(raw_pixels, dtype=np.uint8).reshape(height, width, 4)
+        return rgba[..., :3].transpose(1, 0, 2).copy()
 
 
 def main() -> None:
@@ -254,15 +266,19 @@ def main() -> None:
                 elif event.key == pygame.K_g and gpu_renderer is not None:
                     use_gpu = not use_gpu
                     dirty = True
-                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_UP):
+                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS):
                     max_iterations = min(max_iterations + 40, 1000)
                     dirty = True
-                elif event.key in (pygame.K_MINUS, pygame.K_DOWN):
+                elif event.key == pygame.K_MINUS:
                     max_iterations = max(max_iterations - 40, 40)
                     dirty = True
                 elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                     direction = -1 if event.key == pygame.K_LEFT else 1
                     center_real = np.float64(center_real + direction * span * 0.1)
+                    dirty = True
+                elif event.key in (pygame.K_UP, pygame.K_DOWN):
+                    direction = -1 if event.key == pygame.K_DOWN else 1
+                    center_imag = np.float64(center_imag + direction * span * 0.1)
                     dirty = True
                 elif event.key in (pygame.K_w, pygame.K_s):
                     direction = 1 if event.key == pygame.K_w else -1
@@ -272,8 +288,7 @@ def main() -> None:
         if dirty and running:
             width, height = screen.get_size()
             if use_gpu and gpu_renderer is not None:
-                iterations = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
-                pixels = color_iteration_counts(iterations)
+                pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
             elif c_renderer is not None:
                 iterations = c_renderer.render(
