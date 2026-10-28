@@ -23,7 +23,7 @@ START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
-RENDERER = 2
+RENDERER = 1
 
 
 def color_iteration_counts(iterations: np.ndarray, palette: str = PALETTE) -> np.ndarray:
@@ -39,6 +39,14 @@ def color_iteration_counts(iterations: np.ndarray, palette: str = PALETTE) -> np
         image[..., 1] = (127.5 + 127.5 * np.sin(phase + np.float64(2.1))).astype(np.uint8)
         image[..., 2] = (127.5 + 127.5 * np.sin(phase + np.float64(4.2))).astype(np.uint8)
         image[~escaped] = 0
+
+        #amp = iterations;
+        #image[..., 0] = iterations.astype(np.uint8)
+        #image[..., 1] = (iterations).astype(np.uint8)
+        #image[..., 2] = (iterations).astype(np.uint8)
+        #image[~escaped] = 0
+
+        
     else:
         raise ValueError(f"Unknown palette {palette!r}; expected 'smooth' or 'binary'")
 
@@ -70,6 +78,49 @@ def render_mandelbrot(
         escaped |= escaped_now
 
     return color_iteration_counts(iterations)
+
+
+def screen_to_complex(
+    screen_x: int,
+    screen_y: int,
+    width: int,
+    height: int,
+    center_real: float,
+    center_imag: float,
+    span: float,
+) -> complex:
+    """Convert a screen coordinate to a complex plane coordinate."""
+    imag_span = span * height / width
+    real = center_real - span / 2.0 + span * screen_x / width
+    imag = center_imag + imag_span / 2.0 - imag_span * screen_y / height
+    return complex(real, imag)
+
+
+def mandelbrot_path(
+    complex_point: complex,
+    width: int,
+    height: int,
+    center_real: float,
+    center_imag: float,
+    span: float,
+    max_iterations: int,
+    max_points: int = 128,
+) -> list[tuple[int, int]]:
+    """Return the orbit of a point in screen-space as a list of pixel coordinates."""
+    imag_span = span * height / width
+    z = 0j
+    points: list[tuple[int, int]] = []
+
+    for n in range(max_points):
+        z = z * z + complex_point
+        x = int(round((z.real - (center_real - span / 2.0)) / span * width))
+        y = int(round(height - ((z.imag - (center_imag - imag_span / 2.0)) / imag_span * height)))
+        #if 0 <= x < width and 0 <= y < height:
+        points.append((x, y))
+        if abs(z) > 2.0:
+            break
+
+    return points, z, n
 
 
 class WebGPURenderer:
@@ -216,7 +267,8 @@ def main() -> None:
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("Mandelbrot Explorer")
-    font = pygame.font.Font(None, 18)
+    #font = pygame.font.Font("monospace", 18)
+    font = pygame.font.SysFont("monospace", 14)
     clock = pygame.time.Clock()
     render_ms = 0.0
     smoothed_render_ms = 0.0
@@ -227,10 +279,13 @@ def main() -> None:
     span: np.float64 = START_SPAN
     max_iterations = MAX_ITERATIONS
     dragging = False
+    show_path = False
+    path_mouse = (0, 0)
     dirty = True
     running = True
 
     while running:
+        path_disp = 0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -241,12 +296,21 @@ def main() -> None:
                 dragging = True
                 drag_start = event.pos
                 center_start = (center_real, center_imag)
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                show_path = True
+                path_mouse = event.pos
+                dirty = True
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 dragging = False
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+                show_path = False
             elif event.type == pygame.MOUSEMOTION and dragging:
                 width, height = screen.get_size()
                 center_real = np.float64(center_start[0] - (event.pos[0] - drag_start[0]) * span / width)
                 center_imag = np.float64(center_start[1] + (event.pos[1] - drag_start[1]) * span / width)
+                dirty = True
+            elif event.type == pygame.MOUSEMOTION and show_path:
+                path_mouse = event.pos
                 dirty = True
             elif event.type == pygame.MOUSEWHEEL:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -313,13 +377,28 @@ def main() -> None:
             render_ms = (time.perf_counter() - render_start) * 1000.0
             smoothed_render_ms = render_time_alpha * render_ms + (1.0 - render_time_alpha) * smoothed_render_ms
             pygame.surfarray.blit_array(screen, pixels)
+            if show_path:
+                path_point = screen_to_complex(path_mouse[0], path_mouse[1], width, height, center_real, center_imag, span)
+                path_points, finalz, ct = mandelbrot_path(path_point, width, height, center_real, center_imag, span, max_iterations, max_iterations)
+                if len(path_points) > 1:
+                    pygame.draw.lines(screen, (255, 255, 255), False, path_points, 1)
+                    # Draw a dot at the final point
+                    pygame.draw.circle(screen, (255, 0, 0), path_points[-1], 4)
+                    pygame.draw.circle(screen, (0, 255, 0), path_points[0], 4)
+                    #print(finalz, ct)
+                    path_stat = font.render(
+                        f"st:{path_point.real: 12.11f},{path_point.imag: 12.11f} end:{finalz.real: 12.11f},{finalz.imag: 12.11f}, ct={ct}",
+                        True,
+                        (255, 255, 255),
+                    )                          
+                    path_disp = 1;
             status = font.render(
-                f"{render_mode} | Render {smoothed_render_ms:.1f} ms | Span {span:.17g} | Iterations {max_iterations}",
+                f"{render_mode} | Render {smoothed_render_ms:.1f} ms | Iterations {max_iterations}",
                 True,
                 (255, 255, 255),
             )
             center_status = font.render(
-                f"Center: {center_real:.17g}, {center_imag:.17g}",
+                f"C:{center_real: 15.14f},{center_imag: 15.14f}, SP:{span: 15.14g}",
                 True,
                 (255, 255, 255),
             )
@@ -330,6 +409,8 @@ def main() -> None:
             screen.blit(status, (8, 6))
             screen.blit(center_status, (8, 24))
             screen.blit(controls, (8, 42))
+            if path_disp:
+                screen.blit(path_stat, (8, 60))
             pygame.display.flip()
             dirty = False
 
