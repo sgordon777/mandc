@@ -24,17 +24,16 @@ void render_mandelbrot_c(
                 - imaginary_span * (double)y / (double)(height - 1 > 0 ? height - 1 : 1);
             double z_real = 0.0;
             double z_imag = 0.0;
-            int iteration = 0;
-            int escaped = 0;
+            int iteration = max_iterations;
 
-            for (int step = 0; step < max_iterations; ++step) {
+            int step;
+            for (step = 0; step < max_iterations; ++step) {
                 const double next_real = z_real * z_real - z_imag * z_imag + real;
                 z_imag = 2.0 * z_real * z_imag + imaginary;
                 z_real = next_real;
 
                 if (z_real * z_real + z_imag * z_imag > 4.0) {
                     iteration = step + 1;
-                    escaped = 1;
                     break;
                 }
             }

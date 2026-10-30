@@ -70,10 +70,10 @@ class CRenderer:
         center_imag: float,
         span: float,
         max_iterations: int,
+        iterations: np.ndarray,
         thread_count: int = 1,
     ) -> np.ndarray:
         """Return per-pixel escape iteration counts with shape (width, height)."""
-        iterations = np.empty((width, height), dtype=np.uint16)
         self._render(
             width,
             height,

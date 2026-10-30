@@ -14,44 +14,25 @@ import pygame
 import wgpu
 
 
-WIDTH = 512
-HEIGHT = 512
+WIDTH = 1024
+HEIGHT = 1024
 MAX_ITERATIONS = 256
 THREADS = 4
-PALETTE = "smooth"  # "smooth" or "binary"
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
+# [256,3] color RGB pallete, options: gray, hot, hsv, jet, rainbow, turbo, vir, pink, bone, fall, copper, summer, ocean, cool, cube, sin3
+# sin3=np.array ( [  [(127.5 + 127.5 * np.sin(i*0.08)) for i in range(256)], [(127.5 + 127.5 * np.sin(i*0.08+2.1)) for i in range(256)], [(127.5 + 127.5 * np.sin(i*0.08+4.2)) for i in range(256)]] ).T
+PALLETE_NAME = "hot.csv" 
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
-RENDERER = 1
+RENDERER = 2
 
+#gray_map = np.array([  [i for i in range(256) ], [i for i in range(256)], [i for i in range(256)] ] ).T
 
-def color_iteration_counts(iterations: np.ndarray, palette: str = PALETTE) -> np.ndarray:
-    """Map escape counts to an RGB image using a Python-selected palette."""
-    escaped = iterations > 0
-    image = np.zeros((*iterations.shape, 3), dtype=np.uint8)
-
-    if palette == "binary":
-        image[escaped] = 255
-    elif palette == "smooth":
-        phase = iterations.astype(np.float64) * np.float64(0.08)
-        image[..., 0] = (127.5 + 127.5 * np.sin(phase)).astype(np.uint8)
-        image[..., 1] = (127.5 + 127.5 * np.sin(phase + np.float64(2.1))).astype(np.uint8)
-        image[..., 2] = (127.5 + 127.5 * np.sin(phase + np.float64(4.2))).astype(np.uint8)
-        image[~escaped] = 0
-
-        #amp = iterations;
-        #image[..., 0] = iterations.astype(np.uint8)
-        #image[..., 1] = (iterations).astype(np.uint8)
-        #image[..., 2] = (iterations).astype(np.uint8)
-        #image[~escaped] = 0
-
-        
-    else:
-        raise ValueError(f"Unknown palette {palette!r}; expected 'smooth' or 'binary'")
-
-    return image
-
+def color_iteration_counts(iterations: np.ndarray, max_iterations: int, map: np.ndarray) -> np.ndarray:
+    """Map exact escape counts to an RGB image using a palette."""
+    palette_indices = np.clip((iterations.astype(np.uint32) - 1) * 255 // max_iterations, 0, 254)
+    return map[palette_indices]
 
 def render_mandelbrot(
     width: int,
@@ -60,15 +41,19 @@ def render_mandelbrot(
     center_imag: float,
     span: float,
     max_iterations: int,
+    iteration_buffer: np.ndarray,
 ) -> np.ndarray:
-    """Calculate an RGB Mandelbrot image with shape (width, height, 3)."""
+    """Calculate exact Mandelbrot escape counts with shape (width, height)."""
     real = np.linspace(center_real - span / 2, center_real + span / 2, width, dtype=np.float64)
     imag_span = np.float64(span * height / width)
     imag = np.linspace(center_imag + imag_span / 2, center_imag - imag_span / 2, height, dtype=np.float64)
     coordinates = real[:, np.newaxis] + np.complex128(1j) * imag[np.newaxis, :]
     values = np.zeros(coordinates.shape, dtype=np.complex128)
     escaped = np.zeros(coordinates.shape, dtype=bool)
-    iterations = np.zeros(coordinates.shape, dtype=np.uint16)
+    if iteration_buffer.shape != coordinates.shape or iteration_buffer.dtype != np.uint16:
+        raise ValueError("iteration_buffer must be uint16 with shape (width, height)")
+    iterations = iteration_buffer
+    iterations.fill(max_iterations)
 
     for step in range(max_iterations):
         active = ~escaped
@@ -77,7 +62,7 @@ def render_mandelbrot(
         iterations[escaped_now] = step + 1
         escaped |= escaped_now
 
-    return color_iteration_counts(iterations)
+    return iterations
 
 
 def screen_to_complex(
@@ -140,6 +125,7 @@ struct Params {
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read_write> pixels: array<u32>;
+@group(0) @binding(2) var<storage, read> palette: array<u32>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -153,8 +139,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let imag = params.center_imag + (0.5 - y_fraction) * params.span * f32(params.height) / f32(params.width);
     var z_real = 0.0;
     var z_imag = 0.0;
+    var iteration = params.max_iterations;
     var escaped = false;
-    var iteration = 0u;
 
     for (var step = 0u; step < params.max_iterations; step += 1u) {
         let next_real = z_real * z_real - z_imag * z_imag + real;
@@ -167,24 +153,30 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
-    var color = 0u;
+    var palette_index = 255u;
     if (escaped) {
-        let phase = f32(iteration) * 0.08;
-        let red = u32(127.5 + 127.5 * sin(phase));
-        let green = u32(127.5 + 127.5 * sin(phase + 2.1));
-        let blue = u32(127.5 + 127.5 * sin(phase + 4.2));
-        color = red | (green << 8u) | (blue << 16u) | 0xff000000u;
+        palette_index = min((iteration - 1u) * 255u / params.max_iterations, 254u);
     }
-    pixels[id.y * params.width + id.x] = color;
-
+    pixels[id.y * params.width + id.x] = palette[palette_index];
 
 }
 
 """
 
-    def __init__(self) -> None:
+    def __init__(self, rgb_palette: np.ndarray) -> None:
         self.adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
         self.device = self.adapter.request_device_sync()
+        palette_words = (
+            rgb_palette[:, 0].astype(np.uint32)
+            | (rgb_palette[:, 1].astype(np.uint32) << 8)
+            | (rgb_palette[:, 2].astype(np.uint32) << 16)
+            | np.uint32(0xFF000000)
+        )
+        self.palette_buffer = self.device.create_buffer(
+            size=palette_words.nbytes,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST,
+        )
+        self.device.queue.write_buffer(self.palette_buffer, 0, palette_words)
         shader = self.device.create_shader_module(code=self._SHADER)
         self.pipeline = self.device.create_compute_pipeline(
             layout="auto",
@@ -227,6 +219,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
             entries=[
                 {"binding": 0, "resource": {"buffer": uniform_buffer}},
                 {"binding": 1, "resource": {"buffer": pixel_buffer}},
+                {"binding": 2, "resource": {"buffer": self.palette_buffer}},
             ],
         )
         encoder = self.device.create_command_encoder()
@@ -243,10 +236,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
 
 def main() -> None:
+    palette = np.rint(np.clip(np.loadtxt(PALLETE_NAME, delimiter=","), 0, 255)).astype(np.uint8)
+    if palette.shape != (256, 3):
+        raise ValueError(f"Palette must have shape (256, 3), got {palette.shape}")
     c_renderer = None
     if RENDERER == 2:
         try:
-            gpu_renderer = WebGPURenderer()
+            gpu_renderer = WebGPURenderer(palette)
             use_gpu = True
             print(f"WebGPU device: {gpu_renderer.adapter.info['device']}")
         except Exception as error:
@@ -273,6 +269,7 @@ def main() -> None:
     render_ms = 0.0
     smoothed_render_ms = 0.0
     render_time_alpha = 0.2
+    numpy_iteration_buffer = np.empty((WIDTH, HEIGHT), dtype=np.uint16)
 
     center_real: np.float64 = START_CENTER[0]
     center_imag: np.float64 = START_CENTER[1]
@@ -356,10 +353,14 @@ def main() -> None:
         if dirty and running:
             width, height = screen.get_size()
             render_start = time.perf_counter()
+
             if use_gpu and gpu_renderer is not None:
                 pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
             elif c_renderer is not None:
+                if numpy_iteration_buffer.shape != (width, height):
+                    numpy_iteration_buffer = np.empty((width, height), dtype=np.uint16)
+
                 iterations = c_renderer.render(
                     width,
                     height,
@@ -367,12 +368,24 @@ def main() -> None:
                     center_imag,
                     span,
                     max_iterations,
+                    numpy_iteration_buffer,
                     THREADS,
                 )
-                pixels = color_iteration_counts(iterations)
+                pixels = color_iteration_counts(iterations, max_iterations, palette)
                 render_mode = "C f64"
             else:
-                pixels = render_mandelbrot(width, height, center_real, center_imag, span, max_iterations)
+                if numpy_iteration_buffer.shape != (width, height):
+                    numpy_iteration_buffer = np.empty((width, height), dtype=np.uint16)
+                iterations = render_mandelbrot(
+                    width,
+                    height,
+                    center_real,
+                    center_imag,
+                    span,
+                    max_iterations,
+                    numpy_iteration_buffer,
+                )
+                pixels = color_iteration_counts(iterations, max_iterations, palette)
                 render_mode = "CPU f64"
             render_ms = (time.perf_counter() - render_start) * 1000.0
             smoothed_render_ms = render_time_alpha * render_ms + (1.0 - render_time_alpha) * smoothed_render_ms
@@ -381,7 +394,7 @@ def main() -> None:
                 path_point = screen_to_complex(path_mouse[0], path_mouse[1], width, height, center_real, center_imag, span)
                 path_points, finalz, ct = mandelbrot_path(path_point, width, height, center_real, center_imag, span, max_iterations, max_iterations)
                 if len(path_points) > 1:
-                    pygame.draw.lines(screen, (255, 255, 255), False, path_points, 1)
+                    pygame.draw.lines(screen, (0, 0, 0), False, path_points, 1)
                     # Draw a dot at the final point
                     pygame.draw.circle(screen, (255, 0, 0), path_points[-1], 4)
                     pygame.draw.circle(screen, (0, 255, 0), path_points[0], 4)
