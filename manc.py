@@ -273,7 +273,7 @@ def main() -> None:
         use_gpu = False
         print("Using CPU float64 renderer")
     pygame.init()
-    screen = pygame.display.set_mode((2 * WIDTH, HEIGHT), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("Mandelbrot Explorer")
     #font = pygame.font.Font("monospace", 18)
     font = pygame.font.SysFont("monospace", 14)
@@ -295,13 +295,14 @@ def main() -> None:
     path_dragging = False
     path_point: complex | None = None
     right_mouse_complex: complex | None = None
-    dual_viewport = True
+    dual_viewport = False
     left_dirty = True
     right_dirty = True
     right_base_dirty = True
     running = True
 
     while running:
+        delta_time = min(clock.tick(60) / 1000.0, 0.1)
         path_disp = 0
         left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
         right_width = screen.get_width() - left_width if dual_viewport else 0
@@ -402,6 +403,12 @@ def main() -> None:
                     left_dirty = True
                     right_dirty = True
                     right_base_dirty = True
+                elif event.key == pygame.K_c and show_path:
+                    show_path = False
+                    path_dragging = False
+                    path_point = None
+                    left_dirty = True
+                    right_dirty = True
                 elif event.key == pygame.K_r:
                     center_real, center_imag = START_CENTER
                     span = np.float64(START_SPAN)
@@ -441,18 +448,20 @@ def main() -> None:
                     left_dirty = True
                     right_dirty = True
                     right_base_dirty = True
-                elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
-                    direction = -1 if event.key == pygame.K_LEFT else 1
-                    center_real = np.float64(center_real + direction * span * 0.1)
-                    left_dirty = True
-                elif event.key in (pygame.K_UP, pygame.K_DOWN):
-                    direction = -1 if event.key == pygame.K_DOWN else 1
-                    center_imag = np.float64(center_imag + direction * span * 0.1)
-                    left_dirty = True
                 elif event.key in (pygame.K_w, pygame.K_s):
                     direction = 1 if event.key == pygame.K_w else -1
                     center_imag = np.float64(center_imag + direction * span * 0.1 * height / left_width)
                     left_dirty = True
+
+        keys = pygame.key.get_pressed()
+        horizontal_pan = int(keys[pygame.K_RIGHT]) - int(keys[pygame.K_LEFT])
+        vertical_pan = int(keys[pygame.K_UP]) - int(keys[pygame.K_DOWN])
+        if horizontal_pan or vertical_pan:
+            pan_scale = 0.7071067811865476 if horizontal_pan and vertical_pan else 1.0
+            pan_step = np.float64(span * 0.6 * delta_time * pan_scale)
+            center_real = np.float64(center_real + horizontal_pan * pan_step)
+            center_imag = np.float64(center_imag + vertical_pan * pan_step * height / left_width)
+            left_dirty = True
 
         left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
         right_width = screen.get_width() - left_width if dual_viewport else 0
@@ -529,9 +538,9 @@ def main() -> None:
             )
             controls_text = "Wheel zoom | Drag pan | +/- detail | R reset | Esc quit"
             if gpu_renderer is not None:
-                controls_text = "Left: wheel zoom/drag pan | Right-click: path | F2 single/dual | G GPU/CPU | D dump | +/- detail | R reset | Esc quit"
+                controls_text = "Arrows: pan while held | Wheel zoom/drag pan | Right-click: path | C clear | F2 single/dual | G GPU/CPU | D dump | +/- detail | R reset | Esc quit"
             else:
-                controls_text = "Left: wheel zoom/drag pan | Right-click: path | F2 single/dual | D dump | +/- detail | R reset | Esc quit"
+                controls_text = "Arrows: pan while held | Wheel zoom/drag pan | Right-click: path | C clear | F2 single/dual | D dump | +/- detail | R reset | Esc quit"
             controls = font.render(controls_text, True, (255, 255, 255))
             left_canvas.blit(status, (8, 6))
             left_canvas.blit(center_status, (8, 24))
@@ -614,8 +623,6 @@ def main() -> None:
 
         if frame_dirty:
             pygame.display.flip()
-
-        clock.tick(60)
 
     pygame.quit()
 
