@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from pathlib import Path
 
 if sys.platform.startswith("linux"):
     os.environ.setdefault("WGPU_BACKEND_TYPE", "Vulkan")
@@ -22,7 +23,7 @@ START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 # [256,3] color RGB pallete, options: gray, hot, hsv, jet, rainbow, turbo, vir, pink, bone, fall, copper, summer, ocean, cool, cube, sin3
 # sin3=np.array ( [  [(127.5 + 127.5 * np.sin(i*0.08)) for i in range(256)], [(127.5 + 127.5 * np.sin(i*0.08+2.1)) for i in range(256)], [(127.5 + 127.5 * np.sin(i*0.08+4.2)) for i in range(256)]] ).T
-PALLETE_NAME = "hot.csv" 
+PALLETE_NAME = "sin3.csv" 
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
 RENDERER = 2
@@ -33,6 +34,17 @@ def color_iteration_counts(iterations: np.ndarray, max_iterations: int, map: np.
     """Map exact escape counts to an RGB image using a palette."""
     palette_indices = np.clip((iterations.astype(np.uint32) - 1) * 255 // max_iterations, 0, 254)
     return map[palette_indices]
+
+
+def dump_iterations_to_file(iterations: np.ndarray, output_dir: str | os.PathLike[str] = ".") -> Path:
+    """Write the exact Mandelbrot iteration matrix to a CSV file and return its path."""
+    matrix = np.asarray(iterations, dtype=np.uint16)
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    filename = destination / f"mandelbrot_iterations_{timestamp}.csv"
+    np.savetxt(filename, matrix, delimiter=",", fmt="%d")
+    return filename
 
 def render_mandelbrot(
     width: int,
@@ -270,6 +282,7 @@ def main() -> None:
     smoothed_render_ms = 0.0
     render_time_alpha = 0.2
     numpy_iteration_buffer = np.empty((WIDTH, HEIGHT), dtype=np.uint16)
+    last_iterations: np.ndarray | None = None
 
     center_real: np.float64 = START_CENTER[0]
     center_imag: np.float64 = START_CENTER[1]
@@ -331,6 +344,23 @@ def main() -> None:
                 elif event.key == pygame.K_g and gpu_renderer is not None:
                     use_gpu = not use_gpu
                     dirty = True
+                elif event.key == pygame.K_d:
+                    if last_iterations is not None:
+                        dump_path = dump_iterations_to_file(last_iterations)
+                    else:
+                        width, height = screen.get_size()
+                        temp_iterations = np.empty((width, height), dtype=np.uint16)
+                        dump_matrix = render_mandelbrot(
+                            width,
+                            height,
+                            center_real,
+                            center_imag,
+                            span,
+                            max_iterations,
+                            temp_iterations,
+                        )
+                        dump_path = dump_iterations_to_file(dump_matrix)
+                    print(f"Dumped iteration matrix to {dump_path}")
                 elif event.key in (pygame.K_EQUALS, pygame.K_PLUS):
                     max_iterations = min(max_iterations + 40, 1000)
                     dirty = True
@@ -357,6 +387,7 @@ def main() -> None:
             if use_gpu and gpu_renderer is not None:
                 pixels = gpu_renderer.render(width, height, center_real, center_imag, span, max_iterations)
                 render_mode = "WebGPU f32"
+                last_iterations = None
             elif c_renderer is not None:
                 if numpy_iteration_buffer.shape != (width, height):
                     numpy_iteration_buffer = np.empty((width, height), dtype=np.uint16)
@@ -373,6 +404,7 @@ def main() -> None:
                 )
                 pixels = color_iteration_counts(iterations, max_iterations, palette)
                 render_mode = "C f64"
+                last_iterations = iterations
             else:
                 if numpy_iteration_buffer.shape != (width, height):
                     numpy_iteration_buffer = np.empty((width, height), dtype=np.uint16)
@@ -387,6 +419,7 @@ def main() -> None:
                 )
                 pixels = color_iteration_counts(iterations, max_iterations, palette)
                 render_mode = "CPU f64"
+                last_iterations = iterations
             render_ms = (time.perf_counter() - render_start) * 1000.0
             smoothed_render_ms = render_time_alpha * render_ms + (1.0 - render_time_alpha) * smoothed_render_ms
             pygame.surfarray.blit_array(screen, pixels)
@@ -417,7 +450,9 @@ def main() -> None:
             )
             controls_text = "Wheel zoom | Drag pan | +/- detail | R reset | Esc quit"
             if gpu_renderer is not None:
-                controls_text = "Wheel zoom | Drag pan | G GPU/CPU | +/- detail | R reset | Esc quit"
+                controls_text = "Wheel zoom | Drag pan | G GPU/CPU | D dump | +/- detail | R reset | Esc quit"
+            else:
+                controls_text = "Wheel zoom | Drag pan | D dump | +/- detail | R reset | Esc quit"
             controls = font.render(controls_text, True, (255, 255, 255))
             screen.blit(status, (8, 6))
             screen.blit(center_status, (8, 24))
@@ -433,4 +468,22 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Mandelbrot explorer")
+    parser.add_argument("--render-type", type=int, default=RENDERER, choices=(0, 1, 2), help="0=NumPy, 1=C, 2=WebGPU")
+    parser.add_argument("--palette", type=str, default=PALLETE_NAME, help="Palette CSV filename, e.g. hot.csv or sin3.csv")
+    parser.add_argument("--width", type=int, default=WIDTH, help="Window width in pixels")
+    parser.add_argument("--height", type=int, default=HEIGHT, help="Window height in pixels")
+    parser.add_argument("--max-iterations", type=int, default=MAX_ITERATIONS, help="Maximum Mandelbrot iterations")
+    parser.add_argument("--threads", type=int, default=THREADS, help="Native C renderer thread count")
+    args = parser.parse_args()
+
+    RENDERER = args.render_type
+    PALLETE_NAME = args.palette
+    WIDTH = args.width
+    HEIGHT = args.height
+    MAX_ITERATIONS = args.max_iterations
+    THREADS = args.threads
+
     main()
