@@ -18,7 +18,7 @@ import wgpu
 WIDTH = 1024
 HEIGHT = 1024
 MAX_ITERATIONS = 256
-THREADS = 4
+THREADS = 16
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 # [256,3] color RGB pallete, options: gray, hot, hsv, jet, rainbow, turbo, vir, pink, bone, fall, copper, summer, ocean, cool, cube, sin3
@@ -26,7 +26,7 @@ START_SPAN = np.float64(3.0)
 PALLETE_NAME = "sin3.csv" 
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
-RENDERER = 2
+RENDERER = 1
 
 #gray_map = np.array([  [i for i in range(256) ], [i for i in range(256)], [i for i in range(256)] ] ).T
 
@@ -273,7 +273,7 @@ def main() -> None:
         use_gpu = False
         print("Using CPU float64 renderer")
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+    screen = pygame.display.set_mode((2 * WIDTH, HEIGHT), pygame.RESIZABLE)
     pygame.display.set_caption("Mandelbrot Explorer")
     #font = pygame.font.Font("monospace", 18)
     font = pygame.font.SysFont("monospace", 14)
@@ -282,6 +282,8 @@ def main() -> None:
     smoothed_render_ms = 0.0
     render_time_alpha = 0.2
     numpy_iteration_buffer = np.empty((WIDTH, HEIGHT), dtype=np.uint16)
+    right_iteration_buffer = np.empty((WIDTH, HEIGHT), dtype=np.uint16)
+    right_pixels = np.empty((WIDTH, HEIGHT, 3), dtype=np.uint8)
     last_iterations: np.ndarray | None = None
 
     center_real: np.float64 = START_CENTER[0]
@@ -290,65 +292,133 @@ def main() -> None:
     max_iterations = MAX_ITERATIONS
     dragging = False
     show_path = False
-    path_mouse = (0, 0)
-    dirty = True
+    path_dragging = False
+    path_point: complex | None = None
+    right_mouse_complex: complex | None = None
+    dual_viewport = True
+    left_dirty = True
+    right_dirty = True
+    right_base_dirty = True
     running = True
 
     while running:
         path_disp = 0
+        left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
+        right_width = screen.get_width() - left_width if dual_viewport else 0
+        height = screen.get_height()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.VIDEORESIZE:
                 screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
-                dirty = True
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
+                right_width = screen.get_width() - left_width if dual_viewport else 0
+                height = screen.get_height()
+                left_dirty = True
+                right_dirty = True
+                right_base_dirty = True
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and event.pos[0] < left_width:
                 dragging = True
                 drag_start = event.pos
                 center_start = (center_real, center_imag)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                if not dual_viewport or event.pos[0] < left_width:
+                    path_point = screen_to_complex(
+                        event.pos[0], event.pos[1], left_width, height, center_real, center_imag, span
+                    )
+                else:
+                    path_point = screen_to_complex(
+                        event.pos[0] - left_width,
+                        event.pos[1],
+                        right_width,
+                        height,
+                        START_CENTER[0],
+                        START_CENTER[1],
+                        START_SPAN,
+                    )
                 show_path = True
-                path_mouse = event.pos
-                dirty = True
+                path_dragging = True
+                left_dirty = True
+                right_dirty = True
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 dragging = False
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 3:
-                show_path = False
-            elif event.type == pygame.MOUSEMOTION and dragging:
-                width, height = screen.get_size()
-                center_real = np.float64(center_start[0] - (event.pos[0] - drag_start[0]) * span / width)
-                center_imag = np.float64(center_start[1] + (event.pos[1] - drag_start[1]) * span / width)
-                dirty = True
-            elif event.type == pygame.MOUSEMOTION and show_path:
-                path_mouse = event.pos
-                dirty = True
+                path_dragging = False
+            elif event.type == pygame.MOUSEMOTION:
+                if not dual_viewport or event.pos[0] < left_width:
+                    if right_mouse_complex is not None:
+                        right_mouse_complex = None
+                        right_dirty = True
+                    if dragging:
+                        center_real = np.float64(center_start[0] - (event.pos[0] - drag_start[0]) * span / left_width)
+                        center_imag = np.float64(center_start[1] + (event.pos[1] - drag_start[1]) * span / left_width)
+                        left_dirty = True
+                    if path_dragging:
+                        path_point = screen_to_complex(
+                            event.pos[0], event.pos[1], left_width, height, center_real, center_imag, span
+                        )
+                        left_dirty = True
+                        right_dirty = True
+                elif dual_viewport:
+                    right_mouse_complex = screen_to_complex(
+                        event.pos[0] - left_width,
+                        event.pos[1],
+                        right_width,
+                        height,
+                        START_CENTER[0],
+                        START_CENTER[1],
+                        START_SPAN,
+                    )
+                    right_dirty = True
+                    if path_dragging:
+                        path_point = right_mouse_complex
+                        left_dirty = True
             elif event.type == pygame.MOUSEWHEEL:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-                width, height = screen.get_size()
+                if mouse_x >= left_width:
+                    continue
                 old_span = span
                 span *= np.float64(0.8) ** event.y
-                anchor_real = np.float64(center_real + (mouse_x / width - 0.5) * old_span)
-                anchor_imag = np.float64(center_imag + (0.5 - mouse_y / height) * old_span * height / width)
-                center_real = np.float64(anchor_real - (mouse_x / width - 0.5) * span)
-                center_imag = np.float64(anchor_imag - (0.5 - mouse_y / height) * span * height / width)
-                dirty = True
+                anchor_real = np.float64(center_real + (mouse_x / left_width - 0.5) * old_span)
+                anchor_imag = np.float64(center_imag + (0.5 - mouse_y / height) * old_span * height / left_width)
+                center_real = np.float64(anchor_real - (mouse_x / left_width - 0.5) * span)
+                center_imag = np.float64(anchor_imag - (0.5 - mouse_y / height) * span * height / left_width)
+                left_dirty = True
             elif event.type == pygame.KEYDOWN:
-                width, height = screen.get_size()
                 if event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.key == pygame.K_F2:
+                    window_height = screen.get_height()
+                    if dual_viewport:
+                        window_width = max(1, screen.get_width() // 2)
+                        dual_viewport = False
+                    else:
+                        window_width = screen.get_width() * 2
+                        dual_viewport = True
+                    screen = pygame.display.set_mode((window_width, window_height), pygame.RESIZABLE)
+                    left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
+                    right_width = screen.get_width() - left_width if dual_viewport else 0
+                    right_mouse_complex = None
+                    left_dirty = True
+                    right_dirty = True
+                    right_base_dirty = True
                 elif event.key == pygame.K_r:
                     center_real, center_imag = START_CENTER
                     span = np.float64(START_SPAN)
                     max_iterations = MAX_ITERATIONS
-                    dirty = True
+                    left_dirty = True
+                    right_dirty = True
+                    right_base_dirty = True
                 elif event.key == pygame.K_g and gpu_renderer is not None:
                     use_gpu = not use_gpu
-                    dirty = True
+                    left_dirty = True
+                    right_dirty = True
+                    right_base_dirty = True
                 elif event.key == pygame.K_d:
                     if last_iterations is not None:
                         dump_path = dump_iterations_to_file(last_iterations)
                     else:
-                        width, height = screen.get_size()
+                        width = left_width
                         temp_iterations = np.empty((width, height), dtype=np.uint16)
                         dump_matrix = render_mandelbrot(
                             width,
@@ -363,25 +433,35 @@ def main() -> None:
                     print(f"Dumped iteration matrix to {dump_path}")
                 elif event.key in (pygame.K_EQUALS, pygame.K_PLUS):
                     max_iterations = min(max_iterations + 40, 1000)
-                    dirty = True
+                    left_dirty = True
+                    right_dirty = True
+                    right_base_dirty = True
                 elif event.key == pygame.K_MINUS:
                     max_iterations = max(max_iterations - 40, 40)
-                    dirty = True
+                    left_dirty = True
+                    right_dirty = True
+                    right_base_dirty = True
                 elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                     direction = -1 if event.key == pygame.K_LEFT else 1
                     center_real = np.float64(center_real + direction * span * 0.1)
-                    dirty = True
+                    left_dirty = True
                 elif event.key in (pygame.K_UP, pygame.K_DOWN):
                     direction = -1 if event.key == pygame.K_DOWN else 1
                     center_imag = np.float64(center_imag + direction * span * 0.1)
-                    dirty = True
+                    left_dirty = True
                 elif event.key in (pygame.K_w, pygame.K_s):
                     direction = 1 if event.key == pygame.K_w else -1
-                    center_imag = np.float64(center_imag + direction * span * 0.1 * height / width)
-                    dirty = True
+                    center_imag = np.float64(center_imag + direction * span * 0.1 * height / left_width)
+                    left_dirty = True
 
-        if dirty and running:
-            width, height = screen.get_size()
+        left_width = screen.get_width() // 2 if dual_viewport else screen.get_width()
+        right_width = screen.get_width() - left_width if dual_viewport else 0
+        height = screen.get_height()
+        frame_dirty = left_dirty or (dual_viewport and right_dirty)
+        left_canvas = screen.subsurface(pygame.Rect(0, 0, left_width, height))
+        right_canvas = screen.subsurface(pygame.Rect(left_width, 0, right_width, height)) if dual_viewport else None
+        if left_dirty and running:
+            width = left_width
             render_start = time.perf_counter()
 
             if use_gpu and gpu_renderer is not None:
@@ -422,15 +502,14 @@ def main() -> None:
                 last_iterations = iterations
             render_ms = (time.perf_counter() - render_start) * 1000.0
             smoothed_render_ms = render_time_alpha * render_ms + (1.0 - render_time_alpha) * smoothed_render_ms
-            pygame.surfarray.blit_array(screen, pixels)
-            if show_path:
-                path_point = screen_to_complex(path_mouse[0], path_mouse[1], width, height, center_real, center_imag, span)
+            pygame.surfarray.blit_array(left_canvas, pixels)
+            if show_path and path_point is not None:
                 path_points, finalz, ct = mandelbrot_path(path_point, width, height, center_real, center_imag, span, max_iterations, max_iterations)
                 if len(path_points) > 1:
-                    pygame.draw.lines(screen, (0, 0, 0), False, path_points, 1)
+                    pygame.draw.lines(left_canvas, (0, 0, 0), False, path_points, 1)
                     # Draw a dot at the final point
-                    pygame.draw.circle(screen, (255, 0, 0), path_points[-1], 4)
-                    pygame.draw.circle(screen, (0, 255, 0), path_points[0], 4)
+                    pygame.draw.circle(left_canvas, (255, 0, 0), path_points[-1], 4)
+                    pygame.draw.circle(left_canvas, (0, 255, 0), path_points[0], 4)
                     #print(finalz, ct)
                     path_stat = font.render(
                         f"st:{path_point.real: 12.11f},{path_point.imag: 12.11f} end:{finalz.real: 12.11f},{finalz.imag: 12.11f}, ct={ct}",
@@ -450,17 +529,91 @@ def main() -> None:
             )
             controls_text = "Wheel zoom | Drag pan | +/- detail | R reset | Esc quit"
             if gpu_renderer is not None:
-                controls_text = "Wheel zoom | Drag pan | G GPU/CPU | D dump | +/- detail | R reset | Esc quit"
+                controls_text = "Left: wheel zoom/drag pan | Right-click: path | F2 single/dual | G GPU/CPU | D dump | +/- detail | R reset | Esc quit"
             else:
-                controls_text = "Wheel zoom | Drag pan | D dump | +/- detail | R reset | Esc quit"
+                controls_text = "Left: wheel zoom/drag pan | Right-click: path | F2 single/dual | D dump | +/- detail | R reset | Esc quit"
             controls = font.render(controls_text, True, (255, 255, 255))
-            screen.blit(status, (8, 6))
-            screen.blit(center_status, (8, 24))
-            screen.blit(controls, (8, 42))
+            left_canvas.blit(status, (8, 6))
+            left_canvas.blit(center_status, (8, 24))
+            left_canvas.blit(controls, (8, 42))
             if path_disp:
-                screen.blit(path_stat, (8, 60))
+                left_canvas.blit(path_stat, (8, 60))
+            left_dirty = False
+
+        if dual_viewport and right_dirty and running:
+            width = right_width
+            assert right_canvas is not None
+            if right_base_dirty:
+                if use_gpu and gpu_renderer is not None:
+                    right_pixels = gpu_renderer.render(
+                        width,
+                        height,
+                        START_CENTER[0],
+                        START_CENTER[1],
+                        START_SPAN,
+                        max_iterations,
+                    )
+                else:
+                    if right_iteration_buffer.shape != (width, height):
+                        right_iteration_buffer = np.empty((width, height), dtype=np.uint16)
+                    if c_renderer is not None:
+                        right_iterations = c_renderer.render(
+                            width,
+                            height,
+                            START_CENTER[0],
+                            START_CENTER[1],
+                            START_SPAN,
+                            max_iterations,
+                            right_iteration_buffer,
+                            THREADS,
+                        )
+                    else:
+                        right_iterations = render_mandelbrot(
+                            width,
+                            height,
+                            START_CENTER[0],
+                            START_CENTER[1],
+                            START_SPAN,
+                            max_iterations,
+                            right_iteration_buffer,
+                        )
+                    right_pixels = color_iteration_counts(right_iterations, max_iterations, palette)
+                right_base_dirty = False
+
+            pygame.surfarray.blit_array(right_canvas, right_pixels)
+            if show_path and path_point is not None:
+                right_path_points, _, _ = mandelbrot_path(
+                    path_point,
+                    width,
+                    height,
+                    START_CENTER[0],
+                    START_CENTER[1],
+                    START_SPAN,
+                    max_iterations,
+                    max_iterations,
+                )
+                if len(right_path_points) > 1:
+                    pygame.draw.lines(right_canvas, (0, 0, 0), False, right_path_points, 1)
+                    pygame.draw.circle(right_canvas, (255, 0, 0), right_path_points[-1], 4)
+                    pygame.draw.circle(right_canvas, (0, 255, 0), right_path_points[0], 4)
+            if right_mouse_complex is not None:
+                coordinate_text = font.render(
+                    f"C: {right_mouse_complex.real: .12f}, {right_mouse_complex.imag: .12f}",
+                    True,
+                    (255, 255, 255),
+                )
+                background = pygame.Surface(
+                    (coordinate_text.get_width() + 12, coordinate_text.get_height() + 8),
+                    pygame.SRCALPHA,
+                )
+                background.fill((0, 0, 0, 180))
+                right_canvas.blit(background, (4, 4))
+                right_canvas.blit(coordinate_text, (10, 8))
+            pygame.draw.line(right_canvas, (40, 40, 40), (0, 0), (0, height - 1), 2)
+            right_dirty = False
+
+        if frame_dirty:
             pygame.display.flip()
-            dirty = False
 
         clock.tick(60)
 
@@ -473,8 +626,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mandelbrot explorer")
     parser.add_argument("--render-type", type=int, default=RENDERER, choices=(0, 1, 2), help="0=NumPy, 1=C, 2=WebGPU")
     parser.add_argument("--palette", type=str, default=PALLETE_NAME, help="Palette CSV filename, e.g. hot.csv or sin3.csv")
-    parser.add_argument("--width", type=int, default=WIDTH, help="Window width in pixels")
-    parser.add_argument("--height", type=int, default=HEIGHT, help="Window height in pixels")
+    parser.add_argument("--width", type=int, default=WIDTH, help="Width of each viewport in pixels")
+    parser.add_argument("--height", type=int, default=HEIGHT, help="Height of the window in pixels")
     parser.add_argument("--max-iterations", type=int, default=MAX_ITERATIONS, help="Maximum Mandelbrot iterations")
     parser.add_argument("--threads", type=int, default=THREADS, help="Native C renderer thread count")
     args = parser.parse_args()
