@@ -18,7 +18,7 @@ import wgpu
 WIDTH = 1024
 HEIGHT = 1024
 MAX_ITERATIONS = 256
-THREADS = 4
+THREADS = 16
 START_CENTER = (np.float64(-0.5), np.float64(0.0))
 START_SPAN = np.float64(3.0)
 # [256,3] color RGB pallete, options: gray, hot, hsv, jet, rainbow, turbo, vir, pink, bone, fall, copper, summer, ocean, cool, cube, sin3
@@ -26,7 +26,7 @@ START_SPAN = np.float64(3.0)
 PALLETE_NAME = "sin3.csv" 
 
 # 0=NumPy float64, 1=C float64, 2=WebGPU float32
-RENDERER = 2
+RENDERER = 1
 
 #gray_map = np.array([  [i for i in range(256) ], [i for i in range(256)], [i for i in range(256)] ] ).T
 
@@ -261,13 +261,17 @@ def main() -> None:
             gpu_renderer = None
             use_gpu = False
             print(f"WebGPU unavailable; using CPU float64 renderer: {error}")
-    elif RENDERER == 1:
+    elif RENDERER in (1, 3):
         gpu_renderer = None
         use_gpu = False
+        os.environ["MANDC_OPENMP_GPU"] = "1" if RENDERER == 3 else "0"
         from c_renderer import CRenderer
 
         c_renderer = CRenderer()
-        print("Using native C float64 renderer")
+        if RENDERER == 3:
+            print("Using OpenMP NVIDIA GPU float64 renderer")
+        else:
+            print("Using native C float64 renderer")
     else:
         gpu_renderer = None
         use_gpu = False
@@ -403,7 +407,7 @@ def main() -> None:
                     THREADS,
                 )
                 pixels = color_iteration_counts(iterations, max_iterations, palette)
-                render_mode = "C f64"
+                render_mode = "OpenMP GPU f64" if RENDERER == 3 else "C f64"
                 last_iterations = iterations
             else:
                 if numpy_iteration_buffer.shape != (width, height):
@@ -471,7 +475,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Mandelbrot explorer")
-    parser.add_argument("--render-type", type=int, default=RENDERER, choices=(0, 1, 2), help="0=NumPy, 1=C, 2=WebGPU")
+    parser.add_argument("--render-type", type=int, default=RENDERER, choices=(0, 1, 2, 3), help="0=NumPy, 1=C, 2=WebGPU, 3=OpenMP GPU")
     parser.add_argument("--palette", type=str, default=PALLETE_NAME, help="Palette CSV filename, e.g. hot.csv or sin3.csv")
     parser.add_argument("--width", type=int, default=WIDTH, help="Window width in pixels")
     parser.add_argument("--height", type=int, default=HEIGHT, help="Window height in pixels")

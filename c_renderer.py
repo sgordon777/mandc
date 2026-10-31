@@ -17,10 +17,23 @@ class CRenderer:
     """Compile and call the native C Mandelbrot renderer."""
 
     def __init__(self) -> None:
+        self._use_openmp_gpu = os.environ.get("MANDC_OPENMP_GPU") == "1"
         source = Path(__file__).with_name("mandelbrot.c")
         source_bytes = source.read_bytes()
+        offload_flags = (
+            [
+                "-foffload=nvptx-none",
+                "-foffload-options=nvptx-none=-fcf-protection=none",
+                "-foffload-options=nvptx-none=-fno-stack-protector",
+            ]
+            if self._use_openmp_gpu
+            else ["-foffload=disable"]
+        )
         build_key = hashlib.sha256(
-            source_bytes + platform.machine().encode() + b"-O3-march=native-fopenmp"
+            source_bytes
+            + platform.machine().encode()
+            + b"-O3-march=native-fopenmp"
+            + " ".join(offload_flags).encode()
         ).hexdigest()[:16]
         cache_dir = Path(tempfile.gettempdir()) / "mandc-native"
         cache_dir.mkdir(exist_ok=True)
@@ -28,28 +41,49 @@ class CRenderer:
 
         if not library_path.exists():
             temporary_path = library_path.with_name(f"{library_path.name}.{os.getpid()}.tmp")
-            subprocess.run(
-                [
-                    "cc",
-                    "-O3",
-                    "-march=native",
-                    "-fno-math-errno",
-                    "-fopenmp",
-                    "-fPIC",
-                    "-shared",
-                    str(source),
-                    "-o",
-                    str(temporary_path),
-                    "-lm",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                subprocess.run(
+                    [
+                        "cc",
+                        "-O3",
+                        "-march=native",
+                        "-fno-math-errno",
+                        "-fopenmp",
+                        *offload_flags,
+                        "-fPIC",
+                        "-shared",
+                        str(source),
+                        "-o",
+                        str(temporary_path),
+                        "-lm",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as error:
+                if not self._use_openmp_gpu:
+                    raise
+                compiler_output = error.stderr.strip() if error.stderr else str(error)
+                raise RuntimeError(
+                    "OpenMP NVPTX offload compilation failed. Install the GCC NVPTX "
+                    f"offload compiler/runtime.\n{compiler_output}"
+                ) from error
             os.replace(temporary_path, library_path)
 
         self._library = ctypes.CDLL(str(library_path))
-        self._render = self._library.render_mandelbrot_c
+        if self._use_openmp_gpu:
+            gpu_available = self._library.mandelbrot_openmp_gpu_available
+            gpu_available.argtypes = []
+            gpu_available.restype = ctypes.c_int
+            if not gpu_available():
+                raise RuntimeError(
+                    "OpenMP GPU offload was requested but no NVIDIA target device is active. "
+                    "Check the NVPTX compiler and libgomp offload runtime."
+                )
+            self._render = self._library.render_mandelbrot_openmp_gpu
+        else:
+            self._render = self._library.render_mandelbrot_c
         self._render.argtypes = [
             ctypes.c_int,
             ctypes.c_int,
